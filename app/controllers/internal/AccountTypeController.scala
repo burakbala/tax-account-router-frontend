@@ -19,7 +19,7 @@ package controllers.internal
 import connector.FrontendAuthConnector
 import controllers.TarRules
 import controllers.internal.AccountType.AccountType
-import engine.RuleEngine
+import engine._
 import model._
 import play.api.libs.json.{Json, Reads, Writes}
 import play.api.mvc.Action
@@ -49,9 +49,6 @@ object AccountTypeController extends AccountTypeController {
   override val ruleEngine = TarRules
 
   override val logger = Logger
-
-  override def createAuditContext() = AuditContext()
-
 }
 
 trait AccountTypeController extends FrontendController with Actions {
@@ -61,12 +58,9 @@ trait AccountTypeController extends FrontendController with Actions {
 
   def ruleEngine: RuleEngine
 
-  def createAuditContext(): TAuditContext
-
   def accountTypeForCredId(credId: String) = Action.async { implicit request =>
     val ruleContext = RuleContext(Some(credId))
-    val auditContext = createAuditContext()
-    ruleEngine.matchRulesForLocation(ruleContext, auditContext) map { location =>
+    ruleEngine.getLocation(ruleContext).value map { location =>
       val accountType = accountTypeBasedOnLocation(location)
       Ok(Json.toJson(AccountTypeResponse(accountType)))
     }
@@ -76,7 +70,7 @@ trait AccountTypeController extends FrontendController with Actions {
     case Locations.PersonalTaxAccount => AccountType.Individual
     case Locations.BusinessTaxAccount => AccountType.Organisation
     case unknownLocation: Location =>
-      logger.warn(s"Location is ${unknownLocation.fullUrl} is not recognised as PTA or BTA. Returning default type.")
+      logger.warn(s"Location ${unknownLocation.url} is not recognised as PTA or BTA. Returning default type.")
       defaultAccountType
   }
 
