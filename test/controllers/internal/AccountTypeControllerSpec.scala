@@ -16,19 +16,19 @@
 
 package controllers.internal
 
-import engine.RuleEngine
+import cats.data.WriterT
+import controllers.internal.AccountTypeResponse.accountTypeReads
+import engine.{AuditInfo, RuleEngine}
 import helpers.VerifyLogger
-import model.{Location, Locations, RuleContext, TAuditContext}
+import model.{Location, Locations, RuleContext}
 import org.mockito.ArgumentCaptor
-import org.mockito.Matchers.{eq => eqTo, _}
+import org.mockito.Matchers._
 import org.mockito.Mockito._
 import org.scalatest.concurrent.Eventually
 import org.scalatest.mock.MockitoSugar
-import play.api.mvc.{AnyContent, Request}
 import play.api.test.FakeRequest
 import uk.gov.hmrc.play.filters.MicroserviceFilterSupport
 import uk.gov.hmrc.play.frontend.auth.connectors.AuthConnector
-import uk.gov.hmrc.play.http.HeaderCarrier
 import uk.gov.hmrc.play.test.{UnitSpec, WithFakeApplication}
 
 import scala.concurrent.Future
@@ -39,70 +39,72 @@ class AccountTypeControllerSpec extends UnitSpec with MockitoSugar with WithFake
 
     "return type Organisation when BTA location is provided by rules and there is an origin for this location" in new Setup {
       // given
-      when(mockRuleEngine.matchRulesForLocation(any[RuleContext], any[TAuditContext])(any[Request[AnyContent]], any[HeaderCarrier])).thenReturn(Future.successful(Locations.BusinessTaxAccount))
+      val engineResult = WriterT(Future.successful((mockAuditInfo, Locations.BusinessTaxAccount)))
+      when(mockRuleEngine.getLocation(any[RuleContext])).thenReturn(engineResult)
+
       // when
       val result = await(controller.accountTypeForCredId(credId)(FakeRequest()))
 
       // then
       status(result) shouldBe 200
 
-      import AccountTypeResponse.accountTypeReads
-
       (jsonBodyOf(result) \ "type").as[AccountType.AccountType] shouldBe AccountType.Organisation
 
-      verify(mockRuleEngine).matchRulesForLocation(ruleContextCaptor.capture(), any[TAuditContext])(any[Request[AnyContent]], any[HeaderCarrier])
+      verify(mockRuleEngine).getLocation(ruleContextCaptor.capture())
       ruleContextCaptor.getValue.credId shouldBe Some(credId)
+
       verifyNoMoreInteractions(allMocks: _*)
     }
 
     "return type Individual when PTA location is provided by rules and there is an origin for this location" in new Setup {
       // given
-      when(mockRuleEngine.matchRulesForLocation(any[RuleContext], any[TAuditContext])(any[Request[AnyContent]], any[HeaderCarrier])).thenReturn(Future.successful(Locations.PersonalTaxAccount))
+      val engineResult = WriterT(Future.successful((mockAuditInfo, Locations.PersonalTaxAccount)))
+      when(mockRuleEngine.getLocation(any[RuleContext])).thenReturn(engineResult)
+
       // when
       val result = await(controller.accountTypeForCredId(credId)(FakeRequest()))
 
       // then
       status(result) shouldBe 200
 
-      import AccountTypeResponse.accountTypeReads
-
       (jsonBodyOf(result) \ "type").as[AccountType.AccountType] shouldBe AccountType.Individual
 
-      verify(mockRuleEngine).matchRulesForLocation(ruleContextCaptor.capture(), any[TAuditContext])(any[Request[AnyContent]], any[HeaderCarrier])
+      verify(mockRuleEngine).getLocation(ruleContextCaptor.capture())
       ruleContextCaptor.getValue.credId shouldBe Some(credId)
+
       verifyNoMoreInteractions(allMocks: _*)
     }
 
     "return default account type when an unknown location is provided by rules (not PTA or BTA)" in new Setup {
       // given
       val unknownLocation = Location("unkonwn-location", "/unknown-location")
-      when(mockRuleEngine.matchRulesForLocation(any[RuleContext], any[TAuditContext])(any[Request[AnyContent]], any[HeaderCarrier])).thenReturn(Future.successful(unknownLocation))
+      val engineResult = WriterT(Future.successful((mockAuditInfo, unknownLocation)))
+      when(mockRuleEngine.getLocation(any[RuleContext])).thenReturn(engineResult)
+
       // when
       val result = await(controller.accountTypeForCredId(credId)(FakeRequest()))
 
       // then
       status(result) shouldBe 200
 
-      import AccountTypeResponse.accountTypeReads
-
       (jsonBodyOf(result) \ "type").as[AccountType.AccountType] shouldBe theDefaultAccountType
 
-      verify(mockRuleEngine).matchRulesForLocation(ruleContextCaptor.capture(), any[TAuditContext])(any[Request[AnyContent]], any[HeaderCarrier])
-
-      verifyWarningLogging(s"Location is ${unknownLocation.fullUrl} is not recognised as PTA or BTA. Returning default type.")
-
+      verify(mockRuleEngine).getLocation(ruleContextCaptor.capture())
       ruleContextCaptor.getValue.credId shouldBe Some(credId)
+
+      verifyWarningLogging(s"Location ${unknownLocation.url} is not recognised as PTA or BTA. Returning default type.")
+
       verifyNoMoreInteractions(allMocks: _*)
     }
 
   }
 
   trait Setup extends VerifyLogger {
-    val mockRuleEngine = mock[RuleEngine]
+    val mockAuditInfo = mock[AuditInfo]
     val mockAuthConnector = mock[AuthConnector]
-    val mockAuditContext = mock[TAuditContext]
+    val mockRuleEngine = mock[RuleEngine]
 
-    val allMocks = Seq(mockRuleEngine, mockAuthConnector, mockAuditContext, mockLogger)
+    val allMocks = Seq(mockRuleEngine, mockAuthConnector, mockAuditInfo, mockLogger)
 
     val credId = "credId"
 
@@ -117,14 +119,6 @@ class AccountTypeControllerSpec extends UnitSpec with MockitoSugar with WithFake
       override val defaultAccountType = theDefaultAccountType
 
       override val logger = mockLogger
-
-      /**
-        *
-        * For the moment no audit event will be sent, but evaluation of the rules require the audit context
-        * so it is not removed until it is confirmed. We will most probably need auditing here too, but with a different type.
-        *
-        */
-      override def createAuditContext(): TAuditContext = mockAuditContext
 
       override protected def authConnector: AuthConnector = mockAuthConnector
     }
